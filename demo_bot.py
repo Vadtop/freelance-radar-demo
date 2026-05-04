@@ -13,6 +13,7 @@ from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.settings import DEMO_MODE
 from bot.demo_orders import DEMO_ORDERS
@@ -23,6 +24,16 @@ logging.basicConfig(level=logging.INFO)
 router = Router()
 
 
+def _orders_kb() -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for i, order in enumerate(DEMO_ORDERS, 1):
+        builder.button(text=f"✉️ Отклик: {order['title'][:30]}", callback_data=f"gen_{i}")
+    for i, order in enumerate(DEMO_ORDERS, 1):
+        builder.button(text=f"🔍 Pipeline: {order['title'][:25]}", callback_data=f"pipe_{i}")
+    builder.adjust(3, 3)
+    return builder.as_markup()
+
+
 @router.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -30,11 +41,7 @@ async def cmd_start(message: types.Message):
         "Это демо-бот, показывающий AI-генерацию откликов на фриланс-заказы.\n\n"
         "🔍 Multi-step AI pipeline:\n"
         "   ANALYZE → RECALL → ESTIMATE → DRAFT A/B → CRITIQUE\n\n"
-        "📝 Команды:\n"
-        "• /orders — показать 3 демо-заказа\n"
-        "• /gen &lt;номер&gt; — сгенерировать отклик на заказ (1, 2 или 3)\n"
-        "• /pipeline &lt;номер&gt; — полный pipeline с детализацией шагов\n"
-        "• /about — стек и возможности\n\n"
+        "Нажми <b>/orders</b> чтобы увидеть демо-заказы и кнопки.\n\n"
         "Стек: Python, aiogram 3.x, OpenRouter (DeepSeek/Claude), MCP-tools, "
         "sentence-transformers, aiosqlite",
         parse_mode=ParseMode.HTML,
@@ -50,8 +57,65 @@ async def cmd_orders(message: types.Message):
             f"   💰 {order['budget']}  ·  🗂 {order['platform']}\n"
             f"   {order['description']}\n"
         )
-    lines.append("\n/generate &lt;1-3&gt; — сгенерировать отклик")
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+    await message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_orders_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("gen_"))
+async def cb_gen(callback: types.CallbackQuery):
+    idx = int(callback.data.removeprefix("gen_")) - 1
+    if idx < 0 or idx >= len(DEMO_ORDERS):
+        await callback.answer("Неверный номер", show_alert=True)
+        return
+
+    order = DEMO_ORDERS[idx]
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"⏳ Генерирую отклик на: <b>{order['title']}</b>...",
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+    try:
+        draft = await _generate_draft(order)
+        await callback.message.answer(
+            f"✉️ <b>Отклик на:</b> {order['title']}\n\n{draft}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_orders_kb(),
+        )
+    except Exception as e:
+        log.exception("Generation failed")
+        await callback.message.answer(f"❌ Ошибка генерации: {e}")
+
+
+@router.callback_query(F.data.startswith("pipe_"))
+async def cb_pipe(callback: types.CallbackQuery):
+    idx = int(callback.data.removeprefix("pipe_")) - 1
+    if idx < 0 or idx >= len(DEMO_ORDERS):
+        await callback.answer("Неверный номер", show_alert=True)
+        return
+
+    order = DEMO_ORDERS[idx]
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"⏳ Запускаю pipeline на: <b>{order['title']}</b>...",
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+    try:
+        result = await _run_pipeline(order)
+        await callback.message.answer(
+            result,
+            parse_mode=ParseMode.HTML,
+            reply_markup=_orders_kb(),
+        )
+    except Exception as e:
+        log.exception("Pipeline failed")
+        await callback.message.answer(f"❌ Ошибка pipeline: {e}")
 
 
 @router.message(Command("gen"))
@@ -95,10 +159,7 @@ async def cmd_pipeline(message: types.Message):
 
     try:
         result = await _run_pipeline(order)
-        await message.answer(
-            result,
-            parse_mode=ParseMode.HTML,
-        )
+        await message.answer(result, parse_mode=ParseMode.HTML)
     except Exception as e:
         log.exception("Pipeline failed")
         await message.answer(f"❌ Ошибка pipeline: {e}")
