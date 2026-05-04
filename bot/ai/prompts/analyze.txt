@@ -1,0 +1,20 @@
+Ты — старший аналитик-разработчик. Прочитай ТЗ и верни структурированный JSON.
+
+ТЗ:
+{description}
+
+Категория биржи: {category}
+Бюджет заказчика: {price_hint}
+
+Верни JSON (без markdown-блоков):
+{{
+  "project_type": "telegram_bot|rag|agent|integration|parsing|web_scraping|automation|other",
+  "key_requirements": ["..."],
+  "hidden_requirements": ["..."],
+  "tech_stack_hints": ["..."],
+  "completeness_score": 0-10,
+  "needs_clarification": true|false,
+  "questions_to_ask": ["..."],
+  "complexity": "low|medium|high",
+  "red_flags": ["..."]
+}}
