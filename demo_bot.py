@@ -27,10 +27,8 @@ router = Router()
 def _orders_kb() -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for i, order in enumerate(DEMO_ORDERS, 1):
-        builder.button(text=f"✉️ Отклик: {order['title'][:30]}", callback_data=f"gen_{i}")
-    for i, order in enumerate(DEMO_ORDERS, 1):
-        builder.button(text=f"🔍 Pipeline: {order['title'][:25]}", callback_data=f"pipe_{i}")
-    builder.adjust(3, 3)
+        builder.button(text=f"✉️ Отклик #{i}", callback_data=f"gen_{i}")
+    builder.adjust(3)
     return builder.as_markup()
 
 
@@ -38,12 +36,9 @@ def _orders_kb() -> types.InlineKeyboardMarkup:
 async def cmd_start(message: types.Message):
     await message.answer(
         "👋 <b>Freelance Radar — Демо</b>\n\n"
-        "Это демо-бот, показывающий AI-генерацию откликов на фриланс-заказы.\n\n"
-        "🔍 Multi-step AI pipeline:\n"
-        "   ANALYZE → RECALL → ESTIMATE → DRAFT A/B → CRITIQUE\n\n"
-        "Нажми <b>/orders</b> чтобы увидеть демо-заказы и кнопки.\n\n"
-        "Стек: Python, aiogram 3.x, OpenRouter (DeepSeek/Claude), MCP-tools, "
-        "sentence-transformers, aiosqlite",
+        "AI-генерация откликов на фриланс-заказы.\n\n"
+        "🔍 Pipeline: ANALYZE → RECALL → ESTIMATE → DRAFT A/B → CRITIQUE\n\n"
+        "Нажми <b>/orders</b> чтобы увидеть демо-заказы.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -91,33 +86,6 @@ async def cb_gen(callback: types.CallbackQuery):
         await callback.message.answer(f"❌ Ошибка генерации: {e}")
 
 
-@router.callback_query(F.data.startswith("pipe_"))
-async def cb_pipe(callback: types.CallbackQuery):
-    idx = int(callback.data.removeprefix("pipe_")) - 1
-    if idx < 0 or idx >= len(DEMO_ORDERS):
-        await callback.answer("Неверный номер", show_alert=True)
-        return
-
-    order = DEMO_ORDERS[idx]
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(
-        f"⏳ Запускаю pipeline на: <b>{order['title']}</b>...",
-        parse_mode=ParseMode.HTML,
-    )
-    await callback.answer()
-
-    try:
-        result = await _run_pipeline(order)
-        await callback.message.answer(
-            result,
-            parse_mode=ParseMode.HTML,
-            reply_markup=_orders_kb(),
-        )
-    except Exception as e:
-        log.exception("Pipeline failed")
-        await callback.message.answer(f"❌ Ошибка pipeline: {e}")
-
-
 @router.message(Command("gen"))
 async def cmd_gen(message: types.Message):
     idx = _parse_index(message.text)
@@ -143,43 +111,15 @@ async def cmd_gen(message: types.Message):
         await message.answer(f"❌ Ошибка генерации: {e}")
 
 
-@router.message(Command("pipeline"))
-async def cmd_pipeline(message: types.Message):
-    idx = _parse_index(message.text)
-    if idx is None:
-        await message.answer("Использование: /pipeline <номер 1-3>")
-        return
-
-    order = DEMO_ORDERS[idx]
-    await message.answer(
-        f"⏳ Запускаю pipeline на: <b>{order['title']}</b>...",
-        parse_mode=ParseMode.HTML,
-    )
-    await message.chat.do("typing")
-
-    try:
-        result = await _run_pipeline(order)
-        await message.answer(result, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        log.exception("Pipeline failed")
-        await message.answer(f"❌ Ошибка pipeline: {e}")
-
-
 @router.message(Command("about"))
 async def cmd_about(message: types.Message):
     await message.answer(
-        "🛠 <b>Freelance Radar — стек и возможности</b>\n\n"
-        "<b>AI Pipeline:</b>\n"
-        "1. ANALYZE — анализ ТЗ, тип проекта, требования, red flags\n"
-        "2. RECALL — поиск похожих кейсов (FAISS/sqlite-vec + sentence-transformers)\n"
-        "3. ESTIMATE — декомпозиция → часы → цена\n"
-        "4. DRAFT A/B — два варианта отклика (Claude Haiku + DeepSeek)\n"
-        "5. CRITIQUE — self-critique, проверка на banned phrases\n\n"
-        "<b>Модели:</b> Claude Haiku (draft), DeepSeek (analyze/estimate/critique)\n"
-        "<b>Кейс-база:</b> sentence-transformers + FAISS/sqlite-vec\n"
-        "<b>Observability:</b> Langfuse tracing, Prometheus metrics\n"
-        "<b>Парсеры:</b> FL.ru, Kwork, Habr Freelance, Freelancehunt, Weblancer\n\n"
-        "🤖 Agentic режим: LLM сама выбирает какие MCP-tools вызвать",
+        "🛠 <b>Freelance Radar</b>\n\n"
+        "AI Pipeline: ANALYZE → RECALL → ESTIMATE → DRAFT A/B → CRITIQUE\n\n"
+        "Модели: Claude Haiku (draft), DeepSeek (analyze/estimate/critique)\n"
+        "Кейс-база: sentence-transformers + FAISS\n"
+        "Observability: Langfuse, Prometheus\n"
+        "Парсеры: FL.ru, Kwork, Habr, Freelancehunt, Weblancer",
         parse_mode=ParseMode.HTML,
     )
 
@@ -210,64 +150,8 @@ async def _generate_draft(order: dict) -> str:
     result = await run_pipeline(ctx)
     draft = result.draft_a or result.draft_b or "Не удалось сгенерировать"
     if result.critique:
-        draft += f"\n\n📊 <b>Score:</b> {result.critique.score}/10"
+        draft += f"\n\n📊 Score: {result.critique.score}/10"
     return draft
-
-
-async def _run_pipeline(order: dict) -> str:
-    from bot.ai.schemas import AgentContext
-    from bot.ai.pipeline import run_pipeline
-
-    ctx = AgentContext(
-        title=order["title"],
-        description=order["description"],
-        price_hint=None,
-        source=order.get("platform", "FL.ru"),
-    )
-    result = await run_pipeline(ctx)
-
-    lines = [f"🔍 <b>Pipeline: {order['title']}</b>\n"]
-
-    if ctx.analysis:
-        lines.append(
-            f"\n📐 <b>ANALYZE</b>\n"
-            f"Тип: {ctx.analysis.project_type}\n"
-            f"Полнота: {ctx.analysis.completeness_score}/10\n"
-            f"Сложность: {ctx.analysis.complexity}\n"
-            f"Требования: {', '.join(ctx.analysis.key_requirements[:5])}"
-        )
-        if ctx.analysis.red_flags:
-            lines.append(f"⚠️ Red flags: {', '.join(ctx.analysis.red_flags[:3])}")
-
-    if ctx.estimate:
-        lines.append(
-            f"\n📊 <b>ESTIMATE</b>\n"
-            f"Часы: {ctx.estimate.total_hours:.0f}\n"
-            f"Цена: {ctx.estimate.suggested_price_min:.0f}–{ctx.estimate.suggested_price_max:.0f} ₽\n"
-            f"Срок: {ctx.estimate.suggested_days} дн."
-        )
-
-    if ctx.past_orders:
-        cases = "\n".join(f"  — {c.title} ({c.similarity:.0%})" for c in ctx.past_orders[:3])
-        lines.append(f"\n🧠 <b>RECALL</b>\n{cases}")
-
-    if result.draft_a:
-        lines.append(f"\n✉️ <b>DRAFT A</b>\n{result.draft_a[:1500]}")
-    if result.draft_b:
-        lines.append(f"\n✉️ <b>DRAFT B</b>\n{result.draft_b[:800]}")
-
-    if result.critique:
-        lines.append(
-            f"\n🔎 <b>CRITIQUE</b>\n"
-            f"Score: {result.critique.score}/10\n"
-            f"Rewrite: {'да' if result.critique.should_rewrite else 'нет'}"
-        )
-        if result.critique.issues:
-            lines.append(f"Issues: {', '.join(result.critique.issues[:3])}")
-
-    lines.append(f"\n💰 Tokens: {result.total_tokens} · ${result.total_cost_usd:.4f}")
-
-    return "\n".join(lines)
 
 
 async def main() -> None:
